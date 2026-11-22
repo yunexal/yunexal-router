@@ -53,21 +53,21 @@ sudo ./yunexal-router \
      --ports=25565,24454 \
      --interface=eth0
    ```
-   Або **на MikroTik RouterOS (обов’язково в Safe Mode — `Ctrl+X`)** приймаєте `dst-nat` на нестандартний ігровий порт виключно з `src-address-list=yunexal_edges` і дропаєте решту інтернету:
+   Або **на MikroTik RouterOS (обов’язково в Safe Mode — `Ctrl+X`)** приймаєте `dst-nat` на нестандартний ігровий порт виключно з `src-address-list=yunexal_edges` (`in-interface-list=WAN`) і дропаєте прямі спроби з WAN (не зачіпаючи локальну мережу чи VXLAN):
    ```rsc
    # На MikroTik спочатку увімкніть Safe Mode (Ctrl+X у терміналі або кнопка Safe Mode у WinBox)!
    /ip firewall address-list
    add list=yunexal_edges address=<EDGE_PUBLIC_IP> comment="Yunexal Edge Router"
 
    /ip firewall filter
-   add chain=forward protocol=tcp dst-address=<NODE_LAN_IP> dst-port=25565 src-address-list=yunexal_edges action=accept place-before=0 comment="Allow MC TCP only from Edge"
-   add chain=forward protocol=udp dst-address=<NODE_LAN_IP> dst-port=24454 src-address-list=yunexal_edges action=accept place-before=1 comment="Allow VoiceChat UDP only from Edge"
-   add chain=forward protocol=tcp dst-address=<NODE_LAN_IP> dst-port=25565 action=drop place-before=2 comment="Drop direct MC TCP bypass"
-   add chain=forward protocol=udp dst-address=<NODE_LAN_IP> dst-port=24454 action=drop place-before=3 comment="Drop direct VoiceChat bypass"
+   add chain=forward in-interface-list=WAN protocol=tcp dst-address=<NODE_LAN_IP> dst-port=25565 src-address-list=yunexal_edges action=accept place-before=0 comment="Allow MC TCP from Edge only"
+   add chain=forward in-interface-list=WAN protocol=udp dst-address=<NODE_LAN_IP> dst-port=24454 src-address-list=yunexal_edges action=accept place-before=1 comment="Allow VoiceChat UDP from Edge only"
+   add chain=forward in-interface-list=WAN protocol=tcp dst-address=<NODE_LAN_IP> dst-port=25565 action=drop place-before=2 comment="Drop direct WAN MC TCP"
+   add chain=forward in-interface-list=WAN protocol=udp dst-address=<NODE_LAN_IP> dst-port=24454 action=drop place-before=3 comment="Drop direct WAN VoiceChat"
 
    /ip firewall nat
-   add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=31565 src-address-list=yunexal_edges action=dst-nat to-addresses=<NODE_LAN_IP> to-ports=25565
-   add chain=dstnat in-interface-list=WAN protocol=udp dst-port=31454 src-address-list=yunexal_edges action=dst-nat to-addresses=<NODE_LAN_IP> to-ports=24454
+   add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=31565 src-address-list=yunexal_edges action=dst-nat to-addresses=<NODE_LAN_IP> to-ports=25565 comment="Yunexal Edge MC TCP"
+   add chain=dstnat in-interface-list=WAN protocol=udp dst-port=31454 src-address-list=yunexal_edges action=dst-nat to-addresses=<NODE_LAN_IP> to-ports=24454 comment="Yunexal Edge VoiceChat UDP"
    ```
 
 ## HTTP API (`127.0.0.1:8085`)
