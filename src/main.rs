@@ -156,7 +156,7 @@ async fn main() {
     // Start UDP forwarders & attach XDP shield
     {
         let mut mgr = udp_mgr.lock().await;
-        mgr.sync_mappings(&initial_cfg.udp_mappings);
+        mgr.sync_mappings(&initial_cfg.udp_mappings).await;
     }
     sync_xdp_state(
         args.port,
@@ -200,15 +200,20 @@ async fn main() {
                 if do_watch {
                     let cur_mtime = file_mtime(&watch_path);
                     if cur_mtime != last_mtime {
-                        if let Ok(new_cfg) = RouteConfig::load_from_file(&watch_path) {
-                            last_mtime = cur_mtime;
-                            {
-                                let mut mgr = watch_udp.lock().await;
-                                mgr.sync_mappings(&new_cfg.udp_mappings);
+                        last_mtime = cur_mtime;
+                        match RouteConfig::load_from_file(&watch_path) {
+                            Ok(new_cfg) => {
+                                {
+                                    let mut mgr = watch_udp.lock().await;
+                                    mgr.sync_mappings(&new_cfg.udp_mappings).await;
+                                }
+                                sync_xdp_state(tcp_port, &new_cfg, &watch_xdp, &watch_xdp_mode).await;
+                                *watch_cfg.write().await = new_cfg;
+                                eprintln!("[router] reloaded {}", watch_path.display());
                             }
-                            sync_xdp_state(tcp_port, &new_cfg, &watch_xdp, &watch_xdp_mode).await;
-                            *watch_cfg.write().await = new_cfg;
-                            eprintln!("[router] reloaded {}", watch_path.display());
+                            Err(e) => {
+                                eprintln!("[router] failed reloading {}: {e}", watch_path.display());
+                            }
                         }
                     }
                 }

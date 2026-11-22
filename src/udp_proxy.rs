@@ -25,8 +25,14 @@ struct UdpSession {
     last_active_epoch_sec: AtomicU64,
 }
 
+struct PortHandle {
+    backend_addr: Arc<RwLock<String>>,
+    sessions: Arc<RwLock<HashMap<SocketAddr, Arc<UdpSession>>>>,
+    stop: Arc<AtomicBool>,
+}
+
 pub struct UdpForwarderManager {
-    active_ports: HashMap<u16, (String, Arc<AtomicBool>)>,
+    active_ports: HashMap<u16, PortHandle>,
     pub metrics: Arc<UdpMetrics>,
     start: Instant,
 }
@@ -40,48 +46,67 @@ impl UdpForwarderManager {
         }
     }
 
-    pub fn sync_mappings(&mut self, desired: &HashMap<u16, String>) {
-        // Stop listeners removed or pointing to a changed backend
+    pub async fn sync_mappings(&mut self, desired: &HashMap<u16, String>) {
+        // Stop listeners whose port is no longer configured
         let to_remove: Vec<u16> = self
             .active_ports
-            .iter()
-            .filter_map(|(&port, (backend, _))| match desired.get(&port) {
-                Some(new_b) if new_b == backend => None,
-                _ => Some(port),
-            })
+            .keys()
+            .filter(|port| !desired.contains_key(port))
+            .copied()
             .collect();
 
         for port in to_remove {
-            if let Some((_, stop_flag)) = self.active_ports.remove(&port) {
-                stop_flag.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.active_ports.remove(&port) {
+                handle.stop.store(true, Ordering::Relaxed);
                 eprintln!("[udp] stopped forwarder on :{port}");
             }
         }
 
-        // Start newly added listeners
+        // Update destination in-place or start new port listener cleanly
         for (&port, backend) in desired {
-            if self.active_ports.contains_key(&port) {
+            if let Some(handle) = self.active_ports.get(&port) {
+                let mut cur = handle.backend_addr.write().await;
+                if *cur != *backend {
+                    eprintln!("[udp] updated :{port}/udp -> {} (was {})", backend, *cur);
+                    *cur = backend.clone();
+                    handle.sessions.write().await.clear();
+                }
                 continue;
             }
+
             let stop_flag = Arc::new(AtomicBool::new(false));
+            let backend_slot = Arc::new(RwLock::new(backend.clone()));
+            let sessions = Arc::new(RwLock::new(HashMap::new()));
+
             let flag_clone = stop_flag.clone();
-            let backend_clone = backend.clone();
+            let backend_clone = backend_slot.clone();
+            let sessions_clone = sessions.clone();
             let metrics = self.metrics.clone();
             let start = self.start;
 
             tokio::spawn(async move {
-                if let Err(e) = run_udp_listener(port, backend_clone, flag_clone, metrics, start).await {
+                if let Err(e) =
+                    run_udp_listener(port, backend_clone, sessions_clone, flag_clone, metrics, start)
+                        .await
+                {
                     eprintln!("[udp] listener :{port} error: {e}");
                 }
             });
 
-            self.active_ports.insert(port, (backend.clone(), stop_flag));
+            self.active_ports.insert(
+                port,
+                PortHandle {
+                    backend_addr: backend_slot,
+                    sessions,
+                    stop: stop_flag,
+                },
+            );
         }
     }
 
     pub fn stop_all(&mut self) {
-        for (_, (_, flag)) in self.active_ports.drain() {
-            flag.store(true, Ordering::Relaxed);
+        for (_, handle) in self.active_ports.drain() {
+            handle.stop.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -109,7 +134,8 @@ fn tune_udp_buffers(sock: &UdpSocket) {
 
 async fn run_udp_listener(
     listen_port: u16,
-    backend_addr: String,
+    backend_slot: Arc<RwLock<String>>,
+    sessions: Arc<RwLock<HashMap<SocketAddr, Arc<UdpSession>>>>,
     stop: Arc<AtomicBool>,
     metrics: Arc<UdpMetrics>,
     start: Instant,
@@ -117,10 +143,10 @@ async fn run_udp_listener(
     let bind_addr: SocketAddr = format!("0.0.0.0:{listen_port}").parse().unwrap();
     let downstream = Arc::new(UdpSocket::bind(bind_addr).await?);
     tune_udp_buffers(&downstream);
-    eprintln!("[udp] forwarding :{listen_port}/udp -> {backend_addr}");
-
-    let sessions: Arc<RwLock<HashMap<SocketAddr, Arc<UdpSession>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    {
+        let initial_b = backend_slot.read().await;
+        eprintln!("[udp] forwarding :{listen_port}/udp -> {initial_b}");
+    }
 
     // Session reaper task
     let reaper_sessions = sessions.clone();
@@ -172,10 +198,11 @@ async fn run_udp_listener(
                 s
             }
             None => {
+                let target_backend = backend_slot.read().await.clone();
                 let sock = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
                 tune_udp_buffers(&sock);
-                if let Err(e) = sock.connect(&backend_addr).await {
-                    eprintln!("[udp] failed connecting upstream {backend_addr}: {e}");
+                if let Err(e) = sock.connect(&target_backend).await {
+                    eprintln!("[udp] failed connecting upstream {target_backend}: {e}");
                     continue;
                 }
                 let s = Arc::new(UdpSession {
