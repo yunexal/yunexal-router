@@ -1,0 +1,12 @@
+[package]
+name = "yunexal-router"
+version = "1.0.0"
+edition = "2024"
+description = "High-performance Yunexal Edge Minecraft TCP/UDP Router with eBPF/XDP shield, PROXY protocol v2, and zero-copy splice"
+
+[dependencies]
+aya = "0.13.1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }

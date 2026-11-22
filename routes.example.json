@@ -1,0 +1,19 @@
+{
+  "default": "192.0.2.10:25565",
+  "mappings": {
+    "play.example.com": "192.0.2.10:25565",
+    "*.srv.example.com": "192.0.2.20:25565"
+  },
+  "udpMappings": {
+    "24454": "192.0.2.10:24454",
+    "19132": "192.0.2.20:19132"
+  },
+  "proxyProtocol": true,
+  "statusCacheTtlMs": 2500,
+  "xdpEnabled": true,
+  "xdpInterface": "eth0",
+  "synRateLimitPps": 60,
+  "udpRateLimitPps": 800,
+  "invalidConnBanThreshold": 12,
+  "invalidConnBanSeconds": 120
+}
